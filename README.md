@@ -1,63 +1,57 @@
 # APIsec CI/CD Demo — FastAPI on Railway
 
-A demo FastAPI target deployed to Railway. A GitHub Actions workflow runs an APIsec security scan against the live URL on every push to `main`, every PR, and on-demand via the Actions tab.
+A demo FastAPI target deployed to Railway. A GitHub Actions workflow runs an APIsec security scan against the live URL on every push to `main`, every PR, weekly on a schedule, and on-demand via the Actions tab. Findings upload as SARIF and appear in the GitHub **Security** tab.
 
 ---
 
 ## Prerequisites
 
-- [Railway account](https://railway.app/) with a project
-- [Railway CLI](https://docs.railway.app/guides/cli): `npm install -g @railway/cli`
+- [Railway](https://railway.com/) account
 - GitHub repo with Actions enabled
-- APIsec account with at least one Application and a generated API token
+- APIsec account — login email + password, and a **Project** configured (see Step 2)
 
 ---
 
 ## 1. Deploy to Railway
 
+Easiest path — **web UI** (no CLI required):
+
+1. Push this repo to GitHub (Step 3).
+2. Go to https://railway.com/new → **Deploy from GitHub repo** → authorize + pick the repo.
+3. Railway auto-detects the `Dockerfile` and deploys.
+4. In the service → **Settings → Networking → Generate Domain**.
+5. Verify:
+   ```bash
+   curl https://<your-railway-domain>/healthz
+   # Expected: {"status":"ok"}
+   ```
+
+> Railway injects the `PORT` environment variable automatically. The Dockerfile honors it via `$PORT`.
+
+**CLI alternative** (once Railway CLI is installed):
 ```bash
-# Authenticate
 railway login
-
-# Initialize project (run from repo root — select "Empty Project" if prompted)
 railway init
-
-# Deploy the app
 railway up
-
-# Generate a public domain
 railway domain
 ```
 
-Verify the deployment is live:
-
-```bash
-curl https://<your-railway-domain>/healthz
-# Expected: {"status":"ok"}
-```
-
-> Railway injects the `PORT` environment variable automatically. The Dockerfile and app honor it via `$PORT`.
-
 ---
 
-## 2. Register the App in APIsec
+## 2. Register the Project in APIsec
 
-1. Log in to `https://[your-tenant].apisecapps.com`
-2. Create an **Application** — give it a descriptive name (e.g., `demo-fastapi`)
-3. Under that Application, create an **Instance** — set the Target URL to your Railway public domain:
+1. Log in to `https://[your-tenant].apisecapps.com`.
+2. Create a **Project** — give it a descriptive name (e.g., `run-scan-test`). **Remember this name** — you'll enter it as a GitHub variable in Step 3.
+3. Set the Target URL to your Railway public domain:
    ```
    https://<your-railway-domain>
    ```
-4. Upload the OpenAPI spec to the Instance:
+4. Upload the OpenAPI spec:
    ```bash
    curl https://<your-railway-domain>/openapi.json -o openapi.json
    ```
-   Then upload `openapi.json` via the Instance configuration UI.
-5. Grab your IDs from the dashboard URL — navigate to your Instance and look at the URL:
-   ```
-   https://[your-tenant].apisecapps.com/application/[APP_ID]/instance/[INSTANCE_ID]
-   ```
-6. Grab your **Access Token**: APIsec dashboard → top-right menu → **API Token**
+   Upload `openapi.json` via the Project configuration UI.
+5. Confirm you can log in with the same email + password you'll use in CI — the GitHub Action authenticates as that user.
 
 ---
 
@@ -66,73 +60,87 @@ curl https://<your-railway-domain>/healthz
 Push the repo to GitHub if you haven't already:
 
 ```bash
+git init
+git add .
+git commit -m "feat: initial APIsec scan demo"
 git remote add origin https://github.com/<your-org>/<your-repo>.git
+git branch -M main
 git push -u origin main
 ```
 
-Then add secrets and variables:
+Then add credentials:
 
 **Settings → Secrets and variables → Actions**
 
-Add 3 secrets (sensitive — use the "Secrets" tab):
+Add 2 **Secrets** (sensitive):
 
 | Secret name | Value |
 |---|---|
-| `APISEC_APPLICATION_ID` | `[APP_ID]` from the dashboard URL |
-| `APISEC_INSTANCE_ID` | `[INSTANCE_ID]` from the dashboard URL |
-| `APISEC_ACCESS_TOKEN` | Token from the APIsec API Token menu |
+| `APISEC_USERNAME` | Your APIsec login email |
+| `APISEC_PASSWORD` | Your APIsec login password |
 
-Add 2 variables (optional — use the "Variables" tab, these have safe defaults):
+Add 1 **Variable** (non-sensitive):
 
-| Variable name | Default | Description |
-|---|---|---|
-| `APISEC_SEVERITY_THRESHOLD` | `8` | Min CVSS score that counts toward failure |
-| `APISEC_ERROR_THRESHOLD` | `0` | Max qualifying findings before build fails |
+| Variable name | Value |
+|---|---|
+| `APISEC_PROJECT` | Project name from Step 2 (e.g., `run-scan-test`) |
+
+> If `APISEC_PROJECT` is unset the workflow falls back to `run-scan-test`.
 
 ---
 
 ## 4. Trigger the Scan
 
-**Automatically:** Push any commit to `main` or open a PR targeting `main`.
+**Automatically:** Push any commit to `main` or open a PR targeting `main`. A weekly scheduled scan also runs Thursdays at 19:21 UTC.
 
-**Manually (demo mode):** Go to **Actions → APIsec API Security Scan → Run workflow** and click **Run workflow**. No code change needed.
+**Manually (demo mode):** **Actions → APIsec → Run workflow**. No code change required.
 
 ---
 
 ## 5. Read the Results
 
-Open the workflow run in the **Actions** tab and expand the **Run APIsec CI/CD Security Scan** step.
+Three places to look:
 
-You will see two sections in the log:
+1. **Actions tab** — expand the `Trigger_APIsec_scan` job to see scan progress and the APIsec scan summary.
+2. **Security tab → Code scanning** — SARIF-uploaded findings appear here, grouped by rule, with affected files highlighted. This is the best customer-facing view.
+3. **APIsec dashboard** — click through to your Project for the full scan record with remediation guidance:
+   ```
+   https://[your-tenant].apisecapps.com
+   ```
 
-- **Summary table** — one row per finding: endpoint, method, vulnerability category, CVSS score, severity
-- **Full report** (`INPUT_PRINT_FULL=true`) — detailed finding descriptions for each issue
-
-The step exits `0` (green) if findings are within thresholds, `1` (red) if they exceed thresholds.
-
-For the full scan result with remediation guidance, click through to the APIsec dashboard:
-
-```
-https://[your-tenant].apisecapps.com/application/[APP_ID]/instance/[INSTANCE_ID]
-```
+The workflow fails (red) if the scan surfaces findings that breach your APIsec project's configured thresholds. Otherwise it passes (green) and the next pipeline step continues.
 
 ---
 
 ## 6. Troubleshooting
 
 **APIsec can't reach the target URL**
-- Confirm `railway domain` output shows a public `*.up.railway.app` URL (not a private internal hostname)
-- Test manually: `curl https://<your-railway-domain>/healthz` from your machine
+- Confirm the Railway domain is public and returns `{"status":"ok"}` on `/healthz`
+- Test from your machine: `curl https://<your-railway-domain>/healthz`
 
-**401 from APIsec / scan won't start**
-- The `APISEC_ACCESS_TOKEN` secret may be expired or rotated
-- Generate a new token: APIsec dashboard → API Token menu → regenerate
-- Update the GitHub secret: Settings → Secrets and variables → Actions → `APISEC_ACCESS_TOKEN` → Update
+**`401 Unauthorized` during scan start**
+- `APISEC_USERNAME` or `APISEC_PASSWORD` secret is wrong or expired
+- Log in to the APIsec UI with those credentials to confirm they work, then update the GitHub secret
 
-**Scan starts but never completes**
-- Check that the Instance target URL in APIsec exactly matches your Railway domain (no trailing slash, correct protocol)
-- Verify the OpenAPI spec was uploaded to the Instance — without it, APIsec has no endpoints to scan
-- Check the Instance configuration in the APIsec dashboard for validation errors
+**Project not found**
+- `APISEC_PROJECT` variable must exactly match the Project name in the APIsec dashboard (case-sensitive, no trailing spaces)
 
-**Workflow fails immediately (Docker pull error)**
-- Transient DockerHub rate limit — re-run the workflow from the Actions tab
+**Scan starts but no endpoints scanned**
+- The Project in APIsec is missing its OpenAPI spec — re-upload from `https://<your-railway-domain>/openapi.json`
+- The Target URL on the Project doesn't match the live Railway domain
+
+**SARIF upload step fails on private repo**
+- Add `actions: read` to the job-level `permissions` block (already set in the provided workflow)
+
+---
+
+## What's in this repo
+
+| Path | Purpose |
+|---|---|
+| `app/` | FastAPI source (auth, users, products, orders, health) |
+| `tests/` | pytest suite hitting `TestClient` |
+| `pyproject.toml` / `uv.lock` | `uv`-managed deps, locked for reproducible builds |
+| `Dockerfile` | Production image, runs `uvicorn` on `$PORT` |
+| `railway.json` | Railway builder + healthcheck config |
+| `.github/workflows/apisec-scan.yml` | GitHub Action — runs `apisec-inc/apisec-run-scan@v1.0.7`, uploads SARIF |

@@ -1,51 +1,46 @@
-name: APIsec API Security Scan
+name: APIsec
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   pull_request:
-    branches:
-      - main
+    branches: [ "main" ]
+  schedule:
+    - cron: '21 19 * * 4'
   workflow_dispatch:
-    # Allows manual trigger from the Actions tab — useful for customer demos
-    # and for re-scanning after APIsec configuration changes without a code push.
+
+permissions:
+  contents: read
 
 jobs:
-  apisec-scan:
-    name: APIsec CI/CD Integration
+  Trigger_APIsec_scan:
+    permissions:
+      security-events: write  # upload-sarif writes findings to the Security tab
+      actions: read           # required for upload-sarif on private repos
     runs-on: ubuntu-latest
 
     steps:
-      - name: Run APIsec CI/CD Security Scan
-        run: |
-          docker run --rm \
-            -e INPUT_APPLICATION_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
-            -e INPUT_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
-            -e INPUT_ACCESS_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
-            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
-            -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
-            -e INPUT_PRINT_SUMMARY=true \
-            -e INPUT_PRINT_FULL=true \
-            apisec/cicd:latest
+      - name: APIsec scan
+        uses: apisec-inc/apisec-run-scan@v1.0.7
+        with:
+          apisec-username: ${{ secrets.APISEC_USERNAME }}
+          apisec-password: ${{ secrets.APISEC_PASSWORD }}
+          apisec-project: ${{ vars.APISEC_PROJECT || 'run-scan-test' }}
+          sarif-result-file: "apisec-results.sarif"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Secrets  (Settings → Secrets and variables → Actions → New repository secret)
+      - name: Import results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ./apisec-results.sarif
+
+# ──────────────────────────────────────────────────────────
+# Secrets (Settings → Secrets and variables → Actions → Secrets):
+#   APISEC_USERNAME — APIsec platform login email
+#   APISEC_PASSWORD — APIsec platform login password
 #
-#   APISEC_APPLICATION_ID — UUID from the APIsec dashboard URL:
-#                           /application/<APP_ID>/instance/...
-#   APISEC_INSTANCE_ID    — UUID from the APIsec dashboard URL:
-#                           /application/.../instance/<INSTANCE_ID>
-#   APISEC_ACCESS_TOKEN   — Token from APIsec → API Token menu
+# Variables (Settings → Secrets and variables → Actions → Variables):
+#   APISEC_PROJECT — Project name as it appears in the APIsec dashboard
+#                    (defaults to 'run-scan-test' if unset)
 #
-# Variables  (Settings → Secrets and variables → Actions → New repository variable)
-#
-#   APISEC_SEVERITY_THRESHOLD — Min CVSS score that counts toward failure (default: 8)
-#                               8 = fail on High (7.0-8.9) and Critical (9.0-10.0)
-#   APISEC_ERROR_THRESHOLD    — Max qualifying findings allowed before failure (default: 0)
-#                               0 = zero-tolerance; any qualifying finding fails the build
-#
-# To enforce this as a required status check before merging:
-#   Settings → Branches → Branch protection rules → Require status checks
-#   Add: "APIsec CI/CD Integration"
-# ──────────────────────────────────────────────────────────────────────────────
+# Results land in the GitHub Security tab via SARIF upload.
+# ──────────────────────────────────────────────────────────
