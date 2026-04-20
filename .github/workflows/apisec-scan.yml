@@ -1,46 +1,27 @@
-name: APIsec
+name: APIsec API Security Scan
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+      - release/**
   pull_request:
-    branches: [ "main" ]
-  schedule:
-    - cron: '21 19 * * 4'
-  workflow_dispatch:
-
-permissions:
-  contents: read
+    branches:
+      - main
 
 jobs:
-  Trigger_APIsec_scan:
-    permissions:
-      security-events: write  # upload-sarif writes findings to the Security tab
-      actions: read           # required for upload-sarif on private repos
+  apisec-scan:
+    name: APIsec CI/CD Integration
     runs-on: ubuntu-latest
 
     steps:
-      - name: APIsec scan
-        uses: apisec-inc/apisec-run-scan@v1.0.7
-        with:
-          apisec-username: ${{ secrets.APISEC_USERNAME }}
-          apisec-password: ${{ secrets.APISEC_PASSWORD }}
-          apisec-project: ${{ vars.APISEC_PROJECT || 'run-scan-test' }}
-          sarif-result-file: "apisec-results.sarif"
-
-      - name: Import results
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ./apisec-results.sarif
-
-# ──────────────────────────────────────────────────────────
-# Secrets (Settings → Secrets and variables → Actions → Secrets):
-#   APISEC_USERNAME — APIsec platform login email
-#   APISEC_PASSWORD — APIsec platform login password
-#
-# Variables (Settings → Secrets and variables → Actions → Variables):
-#   APISEC_PROJECT — Project name as it appears in the APIsec dashboard
-#                    (defaults to 'run-scan-test' if unset)
-#
-# Results land in the GitHub Security tab via SARIF upload.
-# ──────────────────────────────────────────────────────────
+      - name: Run APIsec CI/CD Integration
+        run: |
+          docker run --rm \
+            -e INPUT_APPLICATION_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
+            -e INPUT_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
+            -e INPUT_ACCESS_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
+            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
+            -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
+            -e INPUT_PRINT_SUMMARY=true \
+            apisec/cicd:latest
