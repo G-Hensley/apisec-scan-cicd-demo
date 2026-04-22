@@ -24,4 +24,4 @@ jobs:
             -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
             -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
             -e INPUT_PRINT_SUMMARY=true \
-            daveapisec/cicd:5.1.2.0
+            daveapisec/cicd:5.1.2.1
