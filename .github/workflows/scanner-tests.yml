@@ -1,0 +1,43 @@
+name: Scanner image tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cicd-scanner/**'
+      - '.github/workflows/scanner-tests.yml'
+  pull_request:
+    paths:
+      - 'cicd-scanner/**'
+      - '.github/workflows/scanner-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Unit (in-container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build scanner image
+        run: docker build -t apisec-cicd:test cicd-scanner/
+
+      - name: Run robustness suite
+        run: |
+          docker run --rm \
+            -v "$PWD/cicd-scanner/tests:/test:ro" \
+            --workdir /apisec \
+            --entrypoint sh \
+            apisec-cicd:test -c 'python3 /test/test_robustness.py'
+
+  e2e:
+    name: E2E (sidecar mock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build scanner image
+        run: docker build -t apisec-cicd:test cicd-scanner/
+
+      - name: Run E2E scenarios
+        run: IMAGE=apisec-cicd:test bash cicd-scanner/tests/run_e2e.sh

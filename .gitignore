@@ -36,3 +36,9 @@ htmlcov/
 Thumbs.db
 
 # uv.lock is intentionally NOT ignored — keep it checked in for reproducible builds
+
+# Container reverse-engineering scratch dir (extracted upstream image source)
+.container-extract/
+
+# Test-generated self-signed certs (regenerated each run)
+cicd-scanner/tests/certs/
