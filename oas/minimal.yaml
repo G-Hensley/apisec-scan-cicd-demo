@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: APIsec Scan Target (minimal)
+  description: |
+    Stub OpenAPI spec exposing only a single liveness endpoint.
+
+    Upload this in the APIsec dashboard to replace the full app's stored scan
+    profile. With this spec in place, the next scan should find ~0 vulnerabilities,
+    exercising the patched scanner's empty-table output path against the real API.
+
+    The live deployment can keep serving the full app — APIsec only scans what
+    the OAS describes.
+  version: 0.1.0-stub
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      operationId: healthz
+      tags:
+        - health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    example: ok
