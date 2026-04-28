@@ -23,6 +23,13 @@ def print_response(response:requests.Response):
         print(f"{Colors.GREEN}{json.dumps(body, indent=4)}{Colors.END}")
     else:
         print(f"{Colors.RED}{response.reason}{Colors.END}")
+        body = safe_json(response)
+        if body is not None:
+            print(f"{Colors.RED}{json.dumps(body, indent=4)}{Colors.END}")
+        else:
+            snippet = (response.text or "")[:500]
+            if snippet:
+                print(f"{Colors.RED}{snippet}{Colors.END}")
         exit(1)
 
 def check_complete(json:dict, scan_id:str, extra = ""):
