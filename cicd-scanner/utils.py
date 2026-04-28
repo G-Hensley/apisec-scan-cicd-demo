@@ -89,13 +89,17 @@ def print_scan_report(json:dict,
     return table
 
 def row(row:list, widths:list):
-    return f'{truncate(widths[0],str(row[0])).ljust(widths[0])}|{"|".join(truncate(widths[row.index(x)],str(x)).ljust(widths[row.index(x)]) for x in row if row.index(x) > 0)}'
+    head = truncate(widths[0], str(row[0])).ljust(widths[0])
+    tail = "|".join(truncate(w, str(c)).ljust(w) for c, w in zip(row[1:], widths[1:]))
+    return f'{head}|{tail}'
 
 def summary_row(row:list, widths:list):
-    return f'{truncate(widths[0],str(row[0])).ljust(widths[0])}{"|".join(truncate(widths[row.index(x)],str(x)).rjust(widths[row.index(x)]) for x in row if row.index(x) > 0)}'
+    head = truncate(widths[0], str(row[0])).ljust(widths[0])
+    tail = "|".join(truncate(w, str(c)).rjust(w) for c, w in zip(row[1:], widths[1:]))
+    return f'{head}{tail}'
 
 def header_line(widths:list):
-    return f'{"-" * widths[0]}+{"+".join(str("-" * w) for w in widths if widths.index(w) > 0)}'
+    return f'{"-" * widths[0]}+{"+".join("-" * w for w in widths[1:])}'
 
 def truncate(max:int, text:str):
     return text[:max] if len(text) > max else text

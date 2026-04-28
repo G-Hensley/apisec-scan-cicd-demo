@@ -99,6 +99,8 @@ class Table:
                 return Colors.YELLOW
             case "None":
                 return Colors.GREEN
+            case _:
+                return Colors.END
 
     def color_qual(self, qual:str):
         return f"{self.color(qual)}{qual}{Colors.END}"
