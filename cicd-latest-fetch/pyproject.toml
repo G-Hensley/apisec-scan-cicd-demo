@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "apisec-cicd-latest-fetch"
+version = "0.1.0"
+description = "Pulls the latest completed APIsec scan for an application/instance and applies CVSS/error-count gating without triggering a new scan."
+authors = ["APIsec <support@apisec.ai>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.13"
+requests = "^2.32.3"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
