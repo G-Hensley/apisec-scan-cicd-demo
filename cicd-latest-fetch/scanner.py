@@ -43,10 +43,11 @@ class Scanner:
         kw.setdefault("timeout", (CONNECT_TIMEOUT, READ_TIMEOUT))
         return self.session.request(method, url, **kw)
 
-    def scans(self, next_token: str | None = None):
-        url = f"{self.scan_config.apisec_base_url}/v1/applications/{self.scan_config.application_id}/instances/{self.scan_config.instance_id}/scans"
-        params = {"nextToken": next_token} if next_token else None
-        return self._request("GET", url, params=params)
+    def get_application(self):
+        """Fetch the application's metadata, including each instance's
+        `latestScanStats` (which carries the most recent scan id)."""
+        url = f"{self.scan_config.apisec_base_url}/v1/applications/{self.scan_config.application_id}"
+        return self._request("GET", url)
 
     def scan(self, scan_id: str, next_token: str | None = None):
         url = f"{self.scan_config.apisec_base_url}/v1/applications/{self.scan_config.application_id}/instances/{self.scan_config.instance_id}/scans/{scan_id}"

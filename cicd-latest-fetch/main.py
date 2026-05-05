@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""APIsec CI/CD gate that reads the latest *Completed* scan for an
+"""APIsec CI/CD gate that reads the latest scan recorded against an
 application/instance and applies CVSS-severity / error-count thresholds.
 
 Unlike the sibling `cicd-scanner` image, this one does NOT trigger a scan or
 poll for completion. It just reads what already exists.
 
 Behaviour:
-  1. List all scans for (application_id, instance_id), walking nextToken
-     pagination if present.
-  2. Pick the most recent scan whose status == "Complete". If the very
-     latest scan is Processing or Failed, fall back to the next most recent
-     Complete one.
-  3. Fetch that scan's findings, walking nextToken pagination, and run the
-     same threshold gate as cicd-scanner.
+  1. GET /v1/applications/{applicationId} — returns app metadata including
+     each instance's `latestScanStats`.
+  2. Find the configured instance, read latestScanStats.scanId, and require
+     that the latest scan is `Complete`. If it's Processing or Failed, exit 1
+     with a clear message (the API does not expose a list endpoint to fall
+     back to a previous Complete scan).
+  3. GET /v1/applications/{appId}/instances/{instanceId}/scans/{scanId}
+     paginated via `nextToken`, then run the same threshold gate as
+     cicd-scanner.
 
 Inputs (env vars, identical to cicd-scanner minus INPUT_AUTHENTICATION_ID):
   INPUT_APPLICATION_ID         APIsec application id (required)
@@ -35,64 +37,19 @@ from scanner import Scanner
 MAX_PAGINATION_PAGES = 100
 
 
-def pick_latest_complete(scans:list) -> dict | None:
-    """Given a list of scan records, return the most recent one whose
-    `status` is "Complete". Recency is determined by `lastUpdateTime`,
-    falling back to `startTime`. Returns None if no Complete scan exists."""
-    if not isinstance(scans, list):
+def find_instance(application_body, instance_id:str) -> dict | None:
+    """Locate the instance dict matching `instance_id` inside the
+    application metadata returned by GET /v1/applications/{appId}.
+    Returns None if no match (or if the response shape is unexpected)."""
+    if not isinstance(application_body, dict):
         return None
-    completed = [
-        s for s in scans
-        if isinstance(s, dict) and s.get('status') == 'Complete'
-    ]
-    if not completed:
+    instances = application_body.get('instances') or []
+    if not isinstance(instances, list):
         return None
-    completed.sort(
-        key=lambda s: (s.get('lastUpdateTime') or '', s.get('startTime') or ''),
-        reverse=True,
-    )
-    return completed[0]
-
-
-def _extract_scans(body) -> list:
-    """List endpoint may return either a flat list or a wrapped {"scans": [...]}.
-    Try the wrapped form first, then a flat list. Anything else → []."""
-    if isinstance(body, dict) and isinstance(body.get('scans'), list):
-        return body['scans']
-    if isinstance(body, list):
-        return body
-    return []
-
-
-def collect_all_scans(scanner:Scanner) -> tuple[list, int]:
-    """Walk GET /scans nextToken pagination and return every scan record
-    seen, plus the HTTP status of the *first* page (so the caller can
-    distinguish "no scans yet" from "request failed")."""
-    response = scanner.scans()
-    if response.status_code != 200:
-        return [], response.status_code
-    body = utils.safe_json(response) or {}
-    scans = list(_extract_scans(body))
-    next_token = body.get('nextToken') if isinstance(body, dict) else None
-    page = 1
-    while next_token and page < MAX_PAGINATION_PAGES:
-        page += 1
-        response = scanner.scans(next_token=next_token)
-        if response.status_code != 200:
-            print(
-                f"{Colors.YELLOW}Scan-list pagination page {page} returned "
-                f"HTTP {response.status_code}; stopping.{Colors.END}"
-            )
-            break
-        body = utils.safe_json(response) or {}
-        scans.extend(_extract_scans(body))
-        next_token = body.get('nextToken') if isinstance(body, dict) else None
-    if next_token:
-        print(
-            f"{Colors.YELLOW}Scan-list pagination cap of {MAX_PAGINATION_PAGES} "
-            f"pages reached; some scans may be missing.{Colors.END}"
-        )
-    return scans, 200
+    for inst in instances:
+        if isinstance(inst, dict) and inst.get('instanceId') == instance_id:
+            return inst
+    return None
 
 
 def collect_all_findings(scanner:Scanner, scan_id:str, first_body:dict) -> dict:
@@ -157,29 +114,45 @@ def run(scanconfig:ScanConfig):
     """Orchestration entry point — testable without env vars."""
     scanner = Scanner(scanconfig)
 
-    scans, status = collect_all_scans(scanner)
-    if status != 200:
-        print(f"{Colors.RED}Failed to list scans: HTTP {status}.{Colors.END}")
-        sys.exit(1)
-    if not scans:
-        print(f"{Colors.RED}No scans found for this application/instance.{Colors.END}")
-        sys.exit(1)
-
-    selected = pick_latest_complete(scans)
-    if not selected:
+    # 1. Fetch application metadata
+    app_response = scanner.get_application()
+    if app_response.status_code != 200:
         print(
-            f"{Colors.RED}No Completed scan available. The most recent scans "
-            f"may be Processing or Failed.{Colors.END}"
+            f"{Colors.RED}Failed to fetch application "
+            f"{scanconfig.application_id}: HTTP {app_response.status_code}.{Colors.END}"
+        )
+        sys.exit(1)
+    app_body = utils.safe_json(app_response) or {}
+
+    # 2. Locate our instance
+    instance = find_instance(app_body, scanconfig.instance_id)
+    if not instance:
+        print(
+            f"{Colors.RED}Instance {scanconfig.instance_id} was not found in "
+            f"application {scanconfig.application_id}.{Colors.END}"
         )
         sys.exit(1)
 
-    scan_id = selected.get('scanId')
-    if not scan_id:
-        print(f"{Colors.RED}Latest Complete scan has no scanId.{Colors.END}")
+    # 3. Pull the latest scan id from latestScanStats
+    stats = instance.get('latestScanStats')
+    if not stats:
+        print(
+            f"{Colors.RED}No latestScanStats on instance — has any scan "
+            f"completed yet?{Colors.END}"
+        )
         sys.exit(1)
 
-    print(f"Using latest Complete scan: {scan_id}")
+    scan_id = stats.get('scanId') if isinstance(stats, dict) else None
+    if not scan_id:
+        print(
+            f"{Colors.RED}latestScanStats is present but missing scanId. "
+            f"Got: {stats!r}.{Colors.END}"
+        )
+        sys.exit(1)
 
+    print(f"Latest scan id from application metadata: {scan_id}")
+
+    # 4. Fetch the scan detail (first page only here; pagination walked next)
     detail_response = scanner.scan(scan_id)
     if detail_response.status_code != 200:
         print(
@@ -187,8 +160,19 @@ def run(scanconfig:ScanConfig):
             f"HTTP {detail_response.status_code}.{Colors.END}"
         )
         sys.exit(1)
-
     first_body = utils.safe_json(detail_response) or {}
+
+    # 5. Refuse to gate against a non-Complete scan
+    status = first_body.get('status')
+    if status != 'Complete':
+        print(
+            f"{Colors.RED}Latest scan {scan_id} is in state {status!r}, not "
+            f"Complete. Cannot gate. Wait for the scan to finish or trigger "
+            f"a new one.{Colors.END}"
+        )
+        sys.exit(1)
+
+    # 6. Walk pagination and evaluate
     full_results = collect_all_findings(scanner, scan_id, first_body)
     evaluate_scan(scanconfig, full_results)
 
