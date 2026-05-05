@@ -1,13 +1,11 @@
 name: APIsec API Security Scan
 
+# Auto-triggers disabled: this workflow kicks off a fresh ~20-minute scan on
+# every run. The sibling `apisec-latest-fetch.yml` workflow gates against
+# the most recent Completed scan instead, so we let that one run on push/PR
+# and reserve this one for manual "force a fresh scan" reruns.
 on:
-  push:
-    branches:
-      - main
-      - release/**
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   apisec-scan:
