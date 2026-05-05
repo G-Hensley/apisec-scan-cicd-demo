@@ -31,5 +31,6 @@ jobs:
             -e INPUT_ACCESS_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
             -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
             -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
+            -e INPUT_AUTHENTICATION_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
             -e INPUT_PRINT_SUMMARY=true \
             daveapisec/cicd:5.2.0
