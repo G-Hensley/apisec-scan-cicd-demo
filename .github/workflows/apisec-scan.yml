@@ -17,15 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU for arm64 emulation
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      - name: Build scanner image (local, with pagination fix)
+        run: docker build -t apisec-cicd:local cicd-scanner/
 
       - name: Run APIsec CI/CD Integration
         run: |
           docker run --rm \
-            --platform linux/arm64 \
             -e INPUT_APPLICATION_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
             -e INPUT_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
             -e INPUT_ACCESS_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
@@ -33,4 +30,4 @@ jobs:
             -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
             -e INPUT_AUTHENTICATION_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
             -e INPUT_PRINT_SUMMARY=true \
-            daveapisec/cicd:5.2.0
+            apisec-cicd:local

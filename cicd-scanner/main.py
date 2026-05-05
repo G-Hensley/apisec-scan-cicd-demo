@@ -65,13 +65,53 @@ def main():
                     time.sleep(5)
                 print(f"Polling ended. Scan complete: {scan_complete}")
                 if scan_complete:
-                    evaluate_scan(scanconfig, json)
+                    full_results = collect_all_findings(scanner, scan_id, json)
+                    evaluate_scan(scanconfig, full_results)
                 else:
                     print(f"{Colors.RED}Scan did not complete within the polling window.{Colors.END}")
                     exit(1)
             except KeyboardInterrupt:
                 print(f"Polling interrupted. Scan complete: {scan_complete}")
                 exit(1)
+
+MAX_PAGINATION_PAGES = 100
+
+
+def collect_all_findings(scanner:Scanner, scan_id:str, first_body:dict) -> dict:
+    """Walk the scan response's nextToken pagination and merge every page's
+    `vulnerabilities` into a single dict. Returns a copy of `first_body` with
+    the combined vulnerabilities list and `nextToken` stripped.
+
+    Hard-capped at MAX_PAGINATION_PAGES to defend against a misbehaving server
+    that echoes a token forever.
+    """
+    if not isinstance(first_body, dict):
+        first_body = {}
+    merged_vulns = list(first_body.get('vulnerabilities') or [])
+    next_token = first_body.get('nextToken')
+    page = 1
+    while next_token and page < MAX_PAGINATION_PAGES:
+        page += 1
+        response = scanner.scan(scan_id, next_token=next_token)
+        if response.status_code != 200:
+            print(
+                f"{Colors.YELLOW}Pagination page {page} returned "
+                f"HTTP {response.status_code}; stopping.{Colors.END}"
+            )
+            break
+        body = utils.safe_json(response) or {}
+        merged_vulns.extend(body.get('vulnerabilities') or [])
+        next_token = body.get('nextToken')
+    if next_token:
+        print(
+            f"{Colors.YELLOW}Pagination cap of {MAX_PAGINATION_PAGES} pages reached; "
+            f"some findings may be missing.{Colors.END}"
+        )
+    merged = dict(first_body)
+    merged['vulnerabilities'] = merged_vulns
+    merged.pop('nextToken', None)
+    return merged
+
 
 def evaluate_scan(scanconfig:ScanConfig, json:dict):
     results_table = utils.print_scan_report(json, scanconfig.print_summary, scanconfig.print_full)

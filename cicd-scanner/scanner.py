@@ -52,6 +52,7 @@ class Scanner:
         url = f"{self.scan_config.apisec_base_url}/v1/applications/{self.scan_config.application_id}/instances/{self.scan_config.instance_id}/scans"
         return self._request("GET", url)
 
-    def scan(self, scan_id: str):
+    def scan(self, scan_id: str, next_token: str | None = None):
         url = f"{self.scan_config.apisec_base_url}/v1/applications/{self.scan_config.application_id}/instances/{self.scan_config.instance_id}/scans/{scan_id}"
-        return self._request("GET", url)
+        params = {"nextToken": next_token} if next_token else None
+        return self._request("GET", url, params=params)

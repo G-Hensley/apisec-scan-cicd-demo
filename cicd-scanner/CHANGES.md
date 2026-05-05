@@ -65,6 +65,7 @@ see different behavior — most will see this as a fix, not a regression.
 | 8 | `table.py:add_vulnerability` | Defensive `.get()` for all nested fields |
 | 9 | `utils.py:print_scan_report` | `.get('vulnerabilities') or []` |
 | 10 | `table.py:width` | Returns `len(title)` for empty columns (was: `ValueError: max() arg is empty` on 0-vuln scans — the original known bug) |
+| 21 | `scanner.py:scan` + `main.py:collect_all_findings` | Follows `nextToken` pagination on the scan-status endpoint and merges every page's `vulnerabilities` before evaluation. Without this, large scans (anything spanning more than one page of findings) silently reported zero — the script only ever read page 1, which can be empty. Discovered via a customer scan where the UI showed populated findings but CI/CD reported `0 ERRORS`. Hard-capped at 100 pages defensively. |
 
 ## Robustness (HTTP / response handling)
 
@@ -97,12 +98,14 @@ see different behavior — most will see this as a fix, not a regression.
 
 All under `cicd-scanner/tests/`:
 
-**Unit (`test_robustness.py` — 11 assertions, in-process mock):**
+**Unit (`test_robustness.py` — 17 assertions, in-process mock):**
 - `safe_json` on non-JSON 200
 - `check_complete` on missing `status`, empty dict
 - `add_vulnerability` survives null `cvssScore`, missing `testStatus`/`testDetails`
 - `evaluate_scan` skips non-numeric score keys, exits 1 on real critical
 - `Scanner` retries 502 → 200, returns 404 unretried
+- `Scanner.scan(next_token=...)` forwards as `?nextToken=...`
+- `collect_all_findings` walks pagination and merges every page's `vulnerabilities`
 - `Session` headers (Authorization, User-Agent) set
 - `init()` no longer prints request URL
 - Connect timeout: unreachable host errors out within 180s

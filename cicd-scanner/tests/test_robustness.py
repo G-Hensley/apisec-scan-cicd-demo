@@ -6,19 +6,25 @@ Run inside the scanner image:
     apisec-cicd:5.1.2.1-fix3 -c 'python3 /test/test_robustness.py'
 """
 import json as _json
+import os
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-# Ensure /apisec is on the path
+# In-container path
 sys.path.insert(0, "/apisec")
+# Local fallback: source dir is the parent of tests/. Only add if it actually
+# contains the scanner sources, to avoid prepending bogus paths in Docker.
+_local_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.isfile(os.path.join(_local_src, "main.py")):
+    sys.path.insert(0, _local_src)
 
-import utils
-from models import ScanConfig
-from scanner import Scanner
-from table import Table
+import utils  # noqa: E402  (sys.path adjusted above for in-container + local execution)
+from models import ScanConfig  # noqa: E402
+from scanner import Scanner  # noqa: E402
+from table import Table  # noqa: E402
 
 PASSED = []
 FAILED = []
@@ -57,11 +63,47 @@ class MockHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_request(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         # Routes encode the test scenario in the application_id segment.
         # /v1/applications/<scenario>/instances/<x>/scans[/<scan_id>]
         parts = path.strip("/").split("/")
         scenario = parts[2] if len(parts) > 2 else ""
+        if scenario == "paginated-findings":
+            # Two-page response: page 1 returns nextToken, page 2 doesn't.
+            # Each page carries a Critical (CVSS>=8) finding so a working
+            # parser sees 2 errors total; a broken parser stops at page 1
+            # (or zero, depending on the bug).
+            next_token = (query.get("nextToken") or [None])[0]
+            base = {"scanId": "scan-123", "status": "Complete"}
+            if not next_token:
+                return self._send_json(200, {
+                    **base,
+                    "vulnerabilities": [{
+                        "method": "GET", "resource": "/p1",
+                        "scanFindings": [{
+                            "testResult": {"cvssScore": 9.5, "cvssQualifier": "Critical"},
+                            "testDetails": {"categoryName": "A", "categoryTestName": "B"},
+                            "testStatus": {"description": "page1-finding"},
+                        }],
+                    }],
+                    "nextToken": "tok-p2",
+                })
+            if next_token == "tok-p2":
+                return self._send_json(200, {
+                    **base,
+                    "vulnerabilities": [{
+                        "method": "POST", "resource": "/p2",
+                        "scanFindings": [{
+                            "testResult": {"cvssScore": 8.5, "cvssQualifier": "High"},
+                            "testDetails": {"categoryName": "A", "categoryTestName": "B"},
+                            "testStatus": {"description": "page2-finding"},
+                        }],
+                    }],
+                    # last page: no nextToken
+                })
+            return self._send_json(400, {"error": f"unexpected nextToken {next_token!r}"})
         if scenario == "happy-init":
             return self._send_json(200, {"scanId": "scan-123", "status": "Queued"})
         if scenario == "init-no-scanid":
@@ -228,6 +270,42 @@ def test_scanner_does_not_print_url():
            "applications" not in buf.getvalue())
 
 
+def test_scanner_scan_forwards_next_token():
+    """Scanner.scan(next_token=...) must forward it as ?nextToken=... so
+    the API returns the next page instead of page 1."""
+    cfg = make_cfg("paginated-findings")
+    s = Scanner(cfg)
+    r1 = utils.safe_json(s.scan("scan-123")) or {}
+    expect("Page 1 (no token) returns nextToken=tok-p2",
+           r1.get("nextToken") == "tok-p2",
+           f"got {r1.get('nextToken')!r}")
+    r2 = utils.safe_json(s.scan("scan-123", next_token="tok-p2")) or {}
+    expect("Page 2 (with token) returns no nextToken",
+           r2.get("nextToken") is None,
+           f"got {r2.get('nextToken')!r}")
+    expect("Page 2 returns its own page-2 vulnerabilities entry",
+           any(v.get("resource") == "/p2" for v in (r2.get("vulnerabilities") or [])),
+           f"vulns={r2.get('vulnerabilities')}")
+
+
+def test_collect_all_findings_walks_pagination():
+    """main.collect_all_findings must follow nextToken until exhausted and
+    return a merged dict whose 'vulnerabilities' contains every page's findings."""
+    import main
+    cfg = make_cfg("paginated-findings")
+    s = Scanner(cfg)
+    first = utils.safe_json(s.scan("scan-123")) or {}
+    merged = main.collect_all_findings(s, "scan-123", first)
+    vulns = merged.get("vulnerabilities") or []
+    expect("Merged vulnerabilities span both pages",
+           len(vulns) == 2,
+           f"got {len(vulns)} entries")
+    expect("Merged dict preserves status/scanId from first page",
+           merged.get("status") == "Complete" and merged.get("scanId") == "scan-123")
+    expect("Merged dict drops the trailing nextToken",
+           merged.get("nextToken") is None)
+
+
 def test_scanner_timeout_short():
     """Verify that a slow server doesn't hang forever — connect timeout = 10s, read timeout = 60s.
     We'll use a non-routable address to trigger a connect timeout fast."""
@@ -266,6 +344,8 @@ def main():
         test_scanner_404_passes_through()
         test_scanner_session_has_auth_and_ua()
         test_scanner_does_not_print_url()
+        test_scanner_scan_forwards_next_token()
+        test_collect_all_findings_walks_pagination()
         test_scanner_timeout_short()
     finally:
         srv.shutdown()
