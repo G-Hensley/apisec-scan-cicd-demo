@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 import requests
+from models import ScanConfig
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-from models import ScanConfig
 
 USER_AGENT = "apisec-cicd-latest-fetch/0.1.0"
 CONNECT_TIMEOUT = 10
@@ -43,13 +42,18 @@ class Scanner:
         kw.setdefault("timeout", (CONNECT_TIMEOUT, READ_TIMEOUT))
         return self.session.request(method, url, **kw)
 
-    def get_application(self):
-        """Fetch the application's metadata, including each instance's
-        `latestScanStats` (which carries the most recent scan id)."""
-        url = f"{self.scan_config.apisec_base_url}/v1/applications/{self.scan_config.application_id}"
-        return self._request("GET", url)
+    def get_detections(self):
+        """Fetch every detection currently on the configured instance.
 
-    def scan(self, scan_id: str, next_token: str | None = None):
-        url = f"{self.scan_config.apisec_base_url}/v1/applications/{self.scan_config.application_id}/instances/{self.scan_config.instance_id}/scans/{scan_id}"
-        params = {"nextToken": next_token} if next_token else None
+        Single GET — the API returns the full envelope (no nextToken). Each
+        detection record carries its own `status` (ACTIVE / DISMISSED /
+        RISK_ACCEPTED / RESOLVED) and `testResult.cvssScore`, which the gate
+        in main.py filters and counts.
+        """
+        url = (
+            f"{self.scan_config.apisec_base_url}/v1/applications/"
+            f"{self.scan_config.application_id}/instances/"
+            f"{self.scan_config.instance_id}/detections"
+        )
+        params = {"include": "metadata", "slim": "true"}
         return self._request("GET", url, params=params)

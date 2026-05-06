@@ -1,47 +1,45 @@
 # cicd-latest-fetch — Changelog
 
-## 0.1.0 — initial release
+## 0.2.0 — pivot to /detections
 
-A sibling tool to `cicd-scanner`. Whereas `cicd-scanner` triggers a scan and
-polls until it completes, **`cicd-latest-fetch` reads the latest scan
-recorded against an application/instance** and applies the same CVSS /
-error-count threshold gate without triggering a new scan.
+Replaced the application-metadata + scan-detail flow with a single
+`GET /v1/applications/{appId}/instances/{instanceId}/detections` call. The
+former approach assumed `latestScanStats.scanId` existed in the application
+response; per the Postman collection (v1.3, April 14 2026) it does not —
+`latestScanStats` only carries `scanDate`, `percentEndpointsVulnerable`, and
+severity-bucket counters. There is no documented endpoint to discover the
+latest scan id after the fact, so the gate now reads the *current detection
+state* instead.
 
-### Use case
+### Behaviour
 
-CI pipelines that should not pay the 10–30 minute cost of a fresh scan on
-every PR. Run scans on a schedule (e.g. nightly), and have PRs gate against
-the latest results.
+1. `GET /v1/applications/{appId}/instances/{instanceId}/detections?include=metadata&slim=true`
+   returns every detection on the instance, grouped by `category` / `test`,
+   with per-finding `status` and `testResult.cvssScore`.
+2. Findings are filtered to `status == "ACTIVE"`. DISMISSED, RISK_ACCEPTED,
+   and RESOLVED detections appear in the response but are **not counted**
+   toward the gate — they're explicit "do not gate on this" markers.
+3. The remaining ACTIVE findings run through the same CVSS-floor /
+   error-count threshold gate as `cicd-scanner`.
 
-### How "latest" is discovered
+### Trade-off vs. scan-id discovery
 
-The CI access token used by this image **cannot list scans** — the
-`GET /v1/applications/{appId}/instances/{instanceId}/scans` endpoint returns
-403 for the standard CI token scope. Instead the latest scan id is read off
-the application metadata:
+This image used to refuse to gate when the latest scan was `Processing` or
+`Failed`. The detections endpoint has no scan-state concept — it returns
+whatever the most recent completed scan produced, plus any persistent state
+from prior scans (resolutions, risk-accepted markers, dismissals). If a
+fresh scan is currently in flight, the gate runs against the previous
+scan's state. That matches the demo intent: "gate PRs against the latest
+known findings," not "gate PRs against an in-progress scan."
 
-1. `GET /v1/applications/{applicationId}` returns the app + each instance
-   with a `latestScanStats` object whose `scanId` is the most recent run.
-2. The configured `INPUT_INSTANCE_ID` is matched against `instances[]` and
-   `latestScanStats.scanId` is extracted.
-3. `GET /v1/applications/{appId}/instances/{instanceId}/scans/{scanId}` is
-   called with `nextToken` pagination to collect every page of findings.
-4. The combined findings are run through the same CVSS-floor / error-count
-   gate as `cicd-scanner`.
-
-### Trade-off vs. a list endpoint
-
-Without a list endpoint, this tool can only see whatever the API tells it
-is "latest." If the most recent scan is `Processing` or `Failed`, the gate
-exits 1 with a clear message — there is no fallback to the next-most-recent
-Completed scan. The customer's scheduled-scan cadence must therefore avoid
-overlapping with PR runs, or accept that PRs may briefly be blocked while a
-scheduled scan is in progress.
+If no scan has ever completed for the instance, the API returns
+`detections: []` and the gate passes. There is no way to distinguish
+"clean" from "never scanned" with this endpoint alone — operators are
+expected to ensure at least one scan has run before relying on the gate.
 
 ### Inputs (env vars)
 
-Identical to `cicd-scanner` minus `INPUT_AUTHENTICATION_ID` (no scans are
-triggered, so no auth profile is needed).
+Identical to before.
 
 | Variable | Required | Default |
 |---|---|---|
@@ -58,35 +56,26 @@ triggered, so no auth profile is needed).
 
 | Exit | Reason |
 |---|---|
-| 0 | Latest scan is Complete and passes the gate |
-| 1 | Gate failed, OR `GET /applications/{id}` returned non-2xx (auth, 404, 5xx exhausted), OR configured instance not found, OR `latestScanStats` is null, OR latest scan is not yet `Complete`, OR the detail fetch returned non-2xx |
-
-### Pagination
-
-Scan-detail findings follow `nextToken` pagination. Hard cap:
-
-- `MAX_PAGINATION_PAGES = 100`. If hit, a yellow warning is printed and the
-  gate proceeds with what was collected (we'd rather flag a partial result
-  than fail closed when the API misbehaves).
+| 0 | No ACTIVE findings exceed the gate |
+| 1 | Gate failed, OR `GET /detections` returned non-2xx (auth, 404, 5xx exhausted) |
 
 ### Tests
 
-`tests/test_robustness.py` runs in-process against an HTTP mock. 20
+`tests/test_robustness.py` runs in-process against an HTTP mock. 17
 assertions covering:
 
-- Shared utility behaviour (`safe_json`, `Table.add_vulnerability` drift)
+- Shared utilities (`safe_json`, `Table.add_detection` drift)
 - Scanner session headers, retries, 404 pass-through
-- `Scanner.get_application()` round-trip
-- `Scanner.scan(next_token=...)` pagination
-- `find_instance` — match, miss, missing `instances` key
-- `collect_all_findings` walks detail pagination
+- `Scanner.get_detections()` round-trip
 - `run()` integration:
-    - Happy path: latestScanStats → Complete with Critical → exit 1
-    - Paginated findings → exit 1 across pages
-    - `latestScanStats: null` → exit 1
-    - Configured instance not in app → exit 1
-    - Latest scan is `Processing` → exit 1 with state name
-    - 403 from application endpoint → exit 1 with HTTP code
+    - 1 ACTIVE Critical → exit 1
+    - empty `detections: []` → exit 0
+    - all RESOLVED → exit 0
+    - mixed statuses (ACTIVE / RISK_ACCEPTED / DISMISSED) — only ACTIVE counts
+    - 3 ACTIVE Highs above error threshold → exit 1
+    - 3 ACTIVE Highs within error threshold → exit 0
+    - 403 from detections endpoint → exit 1
+    - 404 from detections endpoint → exit 1
 
 Run inside the image:
 
@@ -101,7 +90,17 @@ docker run --rm \
 
 ### Sharing with cicd-scanner
 
-`colors.py`, `table.py`, `utils.py` are intentionally duplicated from
-`cicd-scanner/`. The two images publish on independent cadences and
-duplicating four small files is cheaper than introducing a shared package.
-If a bug fix needs to land in both, propagate manually.
+`colors.py`, `table.py`, `utils.py` were intentionally duplicated from
+`cicd-scanner/`. With this pivot the two diverge — `cicd-latest-fetch`
+operates on the `/detections` envelope shape (`detections[].data.vulnerabilities[]`),
+while `cicd-scanner` still operates on the scan-body shape
+(`vulnerabilities[].scanFindings[]`). The duplication is no longer just
+copy-paste — they're independently maintained.
+
+## 0.1.0 — initial release (superseded)
+
+Sibling tool to `cicd-scanner` for reading the latest scan without
+triggering a new one. Original implementation walked
+`GET /v1/applications/{id}` → `latestScanStats.scanId` →
+`GET /v1/applications/{id}/instances/{id}/scans/{scanId}` with `nextToken`
+pagination. Replaced in 0.2.0 — see above.

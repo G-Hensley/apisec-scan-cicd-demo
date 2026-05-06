@@ -29,34 +29,38 @@ class Table:
         self.description = []
         self.widths = []
 
-    def add_vulnerability(self, v:dict):
-        if not isinstance(v, dict):
-            return
-        for f in (v.get('scanFindings') or []):
-            if not isinstance(f, dict):
-                continue
-            test_result = f.get('testResult') or {}
-            test_details = f.get('testDetails') or {}
-            test_status = f.get('testStatus') or {}
-            score = test_result.get('cvssScore')
-            qual = test_result.get('cvssQualifier') or 'Unknown'
-            self.increment_count(self.score_counts, str(score) if score is not None else 'unknown')
-            self.increment_count(self.qual_counts, qual)
-            self.add_row([v.get('method', ''),
-                          v.get('resource', ''),
-                          test_details.get('categoryName', ''),
-                          test_details.get('categoryTestName', ''),
-                          score if score is not None else '',
-                          qual,
-                          self.truncate(test_status.get('description', '') or '')])
+    def add_detection(self, detection: dict, category_name: str, test_name: str):
+        """Add one row from a /detections record.
 
-    def increment_count(self, count:dict, key):
+        Each detection is a single finding (one method/resource pair against
+        one test). Category and test names live one level up in the response
+        envelope, so the caller passes them in.
+        """
+        if not isinstance(detection, dict):
+            return
+        test_result = detection.get('testResult') or {}
+        score = test_result.get('cvssScore')
+        qual = test_result.get('cvssQualifier') or 'Unknown'
+        description = test_result.get('detectionDescription') or ''
+        self.increment_count(self.score_counts, str(score) if score is not None else 'unknown')
+        self.increment_count(self.qual_counts, qual)
+        self.add_row([
+            detection.get('method', ''),
+            detection.get('resource', ''),
+            category_name or '',
+            test_name or '',
+            score if score is not None else '',
+            qual,
+            self.truncate(description),
+        ])
+
+    def increment_count(self, count: dict, key):
         if key not in count:
             count[key] = 1
         else:
             count[key] += 1
 
-    def add_row(self, cells:list):
+    def add_row(self, cells: list):
         self.method.append(cells[0])
         self.endpoint.append(cells[1])
         self.category_name.append(cells[2])
@@ -79,17 +83,18 @@ class Table:
                                         self.test_name,
                                         self.cvss_score,
                                         self.cvss_qualifier,
-                                        self.description))
+                                        self.description,
+                                        strict=False))
 
-    def width(self, column:list, title:str):
+    def width(self, column: list, title: str):
         if not column:
             return len(title)
         return max(len(max([str(c) for c in column], key=len)), len(title))
 
-    def truncate(self, text:str):
+    def truncate(self, text: str):
         return (text[:self.MAX_WIDTH-3] + "...") if len(text) > self.MAX_WIDTH else text
 
-    def color(self, qual:str):
+    def color(self, qual: str):
         match qual:
             case "Critical":
                 return Colors.RED
@@ -102,8 +107,8 @@ class Table:
             case _:
                 return Colors.END
 
-    def color_qual(self, qual:str):
+    def color_qual(self, qual: str):
         return f"{self.color(qual)}{qual}{Colors.END}"
 
-    def color_score(self, score:float, qual:str):
+    def color_score(self, score: float, qual: str):
         return f"{self.color(qual)}{str(score)}{Colors.END}"

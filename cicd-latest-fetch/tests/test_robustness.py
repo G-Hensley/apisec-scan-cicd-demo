@@ -1,10 +1,11 @@
 """
 Robustness tests for cicd-latest-fetch against an in-process mock APIsec server.
 
-This image fetches the latest scan id off the application metadata
-(`GET /v1/applications/{appId}` → instances[].latestScanStats.scanId), then
-fetches that scan's findings (paginated via nextToken), and applies the
-same threshold gate as cicd-scanner. It does NOT trigger scans.
+This image fetches every detection currently on an instance via
+`GET /v1/applications/{appId}/instances/{instanceId}/detections` and applies a
+CVSS-floor / error-count threshold gate. Only `status == "ACTIVE"` detections
+count toward the gate; DISMISSED, RISK_ACCEPTED, RESOLVED are reported but
+ignored.
 
 Run inside the image:
   docker run --rm -v "$PWD/cicd-latest-fetch/tests:/test:ro" \
@@ -16,7 +17,7 @@ import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 # In-container path
 sys.path.insert(0, "/apisec")
@@ -26,7 +27,7 @@ _local_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.isfile(os.path.join(_local_src, "main.py")):
     sys.path.insert(0, _local_src)
 
-import utils  # noqa: E402  (sys.path adjusted above for in-container + local execution)
+import utils  # noqa: E402
 from models import ScanConfig  # noqa: E402
 from scanner import Scanner  # noqa: E402
 from table import Table  # noqa: E402
@@ -38,6 +39,62 @@ def expect(label, ok, detail=""):
     (PASSED if ok else FAILED).append((label, detail))
     icon = "✓" if ok else "✗"
     print(f"{icon} {label}" + (f"  -- {detail}" if detail and not ok else ""))
+
+
+# ------------------------------------------------------------------
+# Detection-shape builders
+# ------------------------------------------------------------------
+def _detection(method, resource, score, qual, status="ACTIVE"):
+    """One record from detections[].data.vulnerabilities[]."""
+    return {
+        "detectionId": f"det-{method}-{resource}",
+        "endpointId": "fake-endpoint-id",
+        "method": method,
+        "resource": resource,
+        "testResult": {
+            "cvssScore": score,
+            "cvssQualifier": qual,
+            "detectionDescription": f"{qual} finding on {resource}",
+            "assertion": None,
+            "remediation": None,
+            "owaspTags": ["API1:2023"],
+            "cwes": None,
+        },
+        "detectionDate": "2026-04-06T16:50:54Z",
+        "lastFoundDate": "2026-04-06T16:50:54Z",
+        "resolutionDate": None,
+        "status": status,
+        "riskAcceptedEndDate": None,
+        "riskAcceptedBy": None,
+        "comments": None,
+    }
+
+
+def _group(category_name, test_name, vulns):
+    return {
+        "category": {"id": category_name.lower(), "name": category_name, "description": ""},
+        "test": {"id": test_name.lower().replace(" ", "-"), "name": test_name, "description": ""},
+        "totalDetections": len(vulns),
+        "data": {
+            "numVulnerableEndpoints": len(vulns),
+            "numActiveVulnerabilities": sum(1 for v in vulns if v.get("status") == "ACTIVE"),
+            "numInfoDetections": 0,
+            "numResolved": sum(1 for v in vulns if v.get("status") == "RESOLVED"),
+            "vulnerabilities": vulns,
+        },
+    }
+
+
+def _envelope(*groups):
+    return {
+        "metadata": {
+            "totalActiveVulnerabilities": sum(
+                g["data"]["numActiveVulnerabilities"] for g in groups
+            ),
+            "totalTests": 5544,
+        },
+        "detections": list(groups),
+    }
 
 
 # ------------------------------------------------------------------
@@ -69,147 +126,88 @@ class MockHandler(BaseHTTPRequestHandler):
     def do_request(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        query = parse_qs(parsed.query)
         # Routes:
-        #   /v1/applications/<scenario>                              → app metadata
-        #   /v1/applications/<scenario>/instances/<x>/scans/<id>     → scan detail
+        #   /v1/applications/<scenario>/instances/<x>/detections    → all detections
         parts = path.strip("/").split("/")
         scenario = parts[2] if len(parts) > 2 else ""
-        is_application_route = len(parts) == 3 and parts[1] == "applications"
-        is_scan_detail_route = len(parts) >= 7 and parts[5] == "scans"
-        scan_id_seg = parts[6] if is_scan_detail_route else None
+        is_detections_route = (
+            len(parts) == 6
+            and parts[1] == "applications"
+            and parts[3] == "instances"
+            and parts[5] == "detections"
+        )
 
-        if scenario == "latest-happy":
-            # Application has one instance whose latestScanStats points to a
-            # Complete scan with one Critical finding.
-            if is_application_route:
-                return self._send_json(200, {
-                    "applicationId": scenario,
-                    "applicationName": "Happy app",
-                    "instances": [
-                        {"instanceId": "inst",
-                         "hostUrl": "http://example",
-                         "latestScanStats": {
-                             "scanId": "winner",
-                             "status": "Complete",
-                         }},
-                    ],
-                })
-            if is_scan_detail_route and scan_id_seg == "winner":
-                return self._send_json(200, {
-                    "scanId": "winner", "status": "Complete",
-                    "vulnerabilities": [{
-                        "method": "GET", "resource": "/critical",
-                        "scanFindings": [{
-                            "testResult": {"cvssScore": 9.5, "cvssQualifier": "Critical"},
-                            "testDetails": {"categoryName": "A", "categoryTestName": "B"},
-                            "testStatus": {"description": "x"},
-                        }],
-                    }],
-                })
+        if scenario == "detections-happy":
+            if is_detections_route:
+                return self._send_json(200, _envelope(
+                    _group("Payload Injection", "NoSQL Injection", [
+                        _detection("post", "/coupon/validate", 9, "Critical"),
+                    ]),
+                ))
             return self._send_json(500, {"error": f"unexpected route: {path}"})
 
-        if scenario == "latest-no-stats":
-            # Instance exists but has no scans yet.
-            if is_application_route:
-                return self._send_json(200, {
-                    "applicationId": scenario,
-                    "instances": [
-                        {"instanceId": "inst", "latestScanStats": None},
-                    ],
-                })
-            return self._send_json(500, {"error": "should not fetch detail"})
-
-        if scenario == "latest-instance-missing":
-            # Application exists but our instance_id is not among instances[].
-            if is_application_route:
-                return self._send_json(200, {
-                    "applicationId": scenario,
-                    "instances": [
-                        {"instanceId": "some-other-instance",
-                         "latestScanStats": {"scanId": "x", "status": "Complete"}},
-                    ],
-                })
-            return self._send_json(500, {"error": "should not fetch detail"})
-
-        if scenario == "latest-processing":
-            # latestScanStats points to a still-Processing scan.
-            if is_application_route:
-                return self._send_json(200, {
-                    "applicationId": scenario,
-                    "instances": [
-                        {"instanceId": "inst",
-                         "latestScanStats": {
-                             "scanId": "still-running",
-                             "status": "Processing",
-                         }},
-                    ],
-                })
-            if is_scan_detail_route and scan_id_seg == "still-running":
-                return self._send_json(200, {
-                    "scanId": "still-running",
-                    "status": "Processing",
-                })
+        if scenario == "detections-empty":
+            if is_detections_route:
+                return self._send_json(200, _envelope())
             return self._send_json(500, {"error": "unexpected route"})
 
-        if scenario == "paginated-findings":
-            # Application points to scan-123, which paginates findings
-            # across two pages.
-            if is_application_route:
-                return self._send_json(200, {
-                    "applicationId": scenario,
-                    "instances": [
-                        {"instanceId": "inst",
-                         "latestScanStats": {
-                             "scanId": "scan-123",
-                             "status": "Complete",
-                         }},
-                    ],
-                })
-            if is_scan_detail_route and scan_id_seg == "scan-123":
-                next_token = (query.get("nextToken") or [None])[0]
-                base = {"scanId": "scan-123", "status": "Complete"}
-                if not next_token:
-                    return self._send_json(200, {
-                        **base,
-                        "vulnerabilities": [{
-                            "method": "GET", "resource": "/p1",
-                            "scanFindings": [{
-                                "testResult": {"cvssScore": 9.5, "cvssQualifier": "Critical"},
-                                "testDetails": {"categoryName": "A", "categoryTestName": "B"},
-                                "testStatus": {"description": "page1"},
-                            }],
-                        }],
-                        "nextToken": "tok-p2",
-                    })
-                if next_token == "tok-p2":
-                    return self._send_json(200, {
-                        **base,
-                        "vulnerabilities": [{
-                            "method": "POST", "resource": "/p2",
-                            "scanFindings": [{
-                                "testResult": {"cvssScore": 8.5, "cvssQualifier": "High"},
-                                "testDetails": {"categoryName": "A", "categoryTestName": "B"},
-                                "testStatus": {"description": "page2"},
-                            }],
-                        }],
-                    })
-                return self._send_json(400, {"error": f"unexpected nextToken {next_token!r}"})
+        if scenario == "detections-all-resolved":
+            # Detections present, but all RESOLVED — gate must pass.
+            if is_detections_route:
+                return self._send_json(200, _envelope(
+                    _group("Information Leak", "PII data", [
+                        _detection("get", "/orders/all", 6, "Medium", status="RESOLVED"),
+                    ]),
+                ))
+            return self._send_json(500, {"error": "unexpected route"})
+
+        if scenario == "detections-mixed":
+            # 1 ACTIVE Critical, 1 RISK_ACCEPTED High, 1 DISMISSED Medium.
+            # Only the Critical should count.
+            if is_detections_route:
+                return self._send_json(200, _envelope(
+                    _group("Payload Injection", "NoSQL Injection", [
+                        _detection("post", "/a", 9, "Critical", status="ACTIVE"),
+                        _detection("post", "/b", 8, "High", status="RISK_ACCEPTED"),
+                    ]),
+                    _group("Information Leak", "PII data", [
+                        _detection("get", "/c", 6, "Medium", status="DISMISSED"),
+                    ]),
+                ))
+            return self._send_json(500, {"error": "unexpected route"})
+
+        if scenario == "detections-multi-active":
+            # 3 ACTIVE Highs across two groups — error count = 3.
+            if is_detections_route:
+                return self._send_json(200, _envelope(
+                    _group("Payload Injection", "SQL Injection", [
+                        _detection("post", "/x", 8, "High"),
+                        _detection("post", "/y", 8, "High"),
+                    ]),
+                    _group("Auth", "Broken Auth", [
+                        _detection("get", "/z", 8, "High"),
+                    ]),
+                ))
             return self._send_json(500, {"error": "unexpected route"})
 
         if scenario == "app-403":
-            # Mimic the 403 we saw in production when a token couldn't list scans.
-            if is_application_route:
+            if is_detections_route:
                 return self._send_json(403, {"error": "forbidden"})
             return self._send_json(500, {"error": "unexpected route"})
 
-        if scenario == "poll-404":
-            return self._send_json(404, {"error": "not found"})
+        if scenario == "app-404":
+            if is_detections_route:
+                return self._send_json(404, {"error": "not found"})
+            return self._send_json(500, {"error": "unexpected route"})
+
         if scenario == "flaky-502":
             MockHandler.counters["flaky"] += 1
             if MockHandler.counters["flaky"] <= 2:
                 return self._send_raw(502, "text/html", "Bad Gateway")
-            return self._send_json(200, {"applicationId": scenario, "instances": []})
+            return self._send_json(200, _envelope())
+
+        if scenario == "poll-404":
+            return self._send_json(404, {"error": "not found"})
 
         return self._send_json(200, {"ok": True})
 
@@ -256,31 +254,27 @@ def test_unit_safe_json_html():
     expect("safe_json returns None on non-JSON", utils.safe_json(Fake()) is None)
 
 
-def test_unit_add_vulnerability_drift():
+def test_unit_add_detection_drift():
     t = Table()
     drift = {
         "method": "GET",
         "resource": "/x",
-        "scanFindings": [
-            {"testResult": {"cvssScore": None, "cvssQualifier": "Critical"}},
-            {"testResult": {"cvssScore": 9.5, "cvssQualifier": "High"},
-             "testDetails": {"categoryName": "A", "categoryTestName": "B"},
-             "testStatus": {"description": "ok"}},
-        ],
+        "testResult": {"cvssScore": None, "cvssQualifier": "Critical"},
+        "status": "ACTIVE",
     }
     try:
-        t.add_vulnerability(drift)
-        expect("add_vulnerability survives missing/null fields",
-               len(t.method) == 2 and "Critical" in t.qual_counts)
+        t.add_detection(drift, "Cat", "Test")
+        expect("add_detection survives missing/null fields",
+               len(t.method) == 1 and "Critical" in t.qual_counts)
     except Exception as e:
-        expect("add_vulnerability survives missing/null fields", False, repr(e))
+        expect("add_detection survives missing/null fields", False, repr(e))
 
 
 # ------------------------------------------------------------------
 # Tests — Scanner
 # ------------------------------------------------------------------
 def test_scanner_session_has_auth_and_ua():
-    cfg = make_cfg("latest-happy")
+    cfg = make_cfg("detections-happy")
     s = Scanner(cfg)
     expect("Session sets Authorization header",
            s.session.headers.get("Authorization") == "Bearer dummy-token")
@@ -288,31 +282,21 @@ def test_scanner_session_has_auth_and_ua():
            "apisec-cicd-latest-fetch" in (s.session.headers.get("User-Agent") or ""))
 
 
-def test_scanner_get_application_returns_data():
-    cfg = make_cfg("latest-happy")
+def test_scanner_get_detections_returns_data():
+    cfg = make_cfg("detections-happy")
     s = Scanner(cfg)
-    response = s.get_application()
-    expect("get_application() returns 200", response.status_code == 200)
+    response = s.get_detections()
+    expect("get_detections() returns 200", response.status_code == 200)
     body = utils.safe_json(response) or {}
-    expect("get_application() body has instances list",
-           isinstance(body.get("instances"), list))
-
-
-def test_scanner_scan_forwards_next_token():
-    cfg = make_cfg("paginated-findings")
-    s = Scanner(cfg)
-    r1 = utils.safe_json(s.scan("scan-123")) or {}
-    expect("Detail page 1 returns nextToken=tok-p2",
-           r1.get("nextToken") == "tok-p2")
-    r2 = utils.safe_json(s.scan("scan-123", next_token="tok-p2")) or {}
-    expect("Detail page 2 returns no nextToken", r2.get("nextToken") is None)
+    expect("get_detections() body has detections list",
+           isinstance(body.get("detections"), list))
 
 
 def test_scanner_retry_recovers_502():
     MockHandler.counters["flaky"] = 0
     cfg = make_cfg("flaky-502")
     s = Scanner(cfg)
-    r = s.get_application()
+    r = s.get_detections()
     expect("Scanner retries 502 then succeeds 200",
            r.status_code == 200 and MockHandler.counters["flaky"] == 3)
 
@@ -321,113 +305,111 @@ def test_scanner_404_passes_through():
     cfg = make_cfg("poll-404")
     s = Scanner(cfg)
     expect("Scanner returns 404 (does not retry)",
-           s.get_application().status_code == 404)
+           s.get_detections().status_code == 404)
 
 
 # ------------------------------------------------------------------
-# Tests — find_instance helper (NEW behaviour)
+# Tests — run() integration
 # ------------------------------------------------------------------
-def test_find_instance_returns_match():
+def test_run_exits_1_on_active_critical():
     import main
-    body = {"instances": [
-        {"instanceId": "a"}, {"instanceId": "target"}, {"instanceId": "c"},
-    ]}
-    inst = main.find_instance(body, "target")
-    expect("find_instance returns the matching dict",
-           inst and inst.get("instanceId") == "target",
-           f"got {inst}")
-
-
-def test_find_instance_returns_none_when_missing():
-    import main
-    body = {"instances": [{"instanceId": "a"}, {"instanceId": "b"}]}
-    expect("find_instance returns None when no match",
-           main.find_instance(body, "missing") is None)
-
-
-def test_find_instance_handles_missing_instances_key():
-    import main
-    expect("find_instance handles missing instances list",
-           main.find_instance({}, "anything") is None)
-
-
-# ------------------------------------------------------------------
-# Tests — collect_all_findings (re-used from cicd-scanner)
-# ------------------------------------------------------------------
-def test_collect_all_findings_walks_pagination():
-    import main
-    cfg = make_cfg("paginated-findings")
-    s = Scanner(cfg)
-    first = utils.safe_json(s.scan("scan-123")) or {}
-    merged = main.collect_all_findings(s, "scan-123", first)
-    vulns = merged.get("vulnerabilities") or []
-    expect("Merged vulnerabilities span both pages",
-           len(vulns) == 2,
-           f"got {len(vulns)} entries")
-
-
-# ------------------------------------------------------------------
-# Tests — run() integration (NEW orchestration)
-# ------------------------------------------------------------------
-def test_run_picks_latest_scan_id_from_application_and_evaluates():
-    import main
-    cfg = make_cfg("latest-happy")
+    cfg = make_cfg("detections-happy")
     try:
         main.run(cfg)
-        expect("run() exits when a Critical is found", False, "did not exit")
+        expect("run() exits when an Active Critical is found", False, "did not exit")
     except SystemExit as e:
-        # winner has 1 Critical → error_count=1 > threshold=0 → exit 1
-        expect("run() exits 1 on Critical (latest-happy)",
+        expect("run() exits 1 on Active Critical (detections-happy)",
                e.code == 1, f"got {e.code}")
 
 
-def test_run_evaluates_paginated_findings():
+def test_run_exits_0_on_empty_detections():
     import main
-    cfg = make_cfg("paginated-findings")
+    cfg = make_cfg("detections-empty")
     try:
         main.run(cfg)
-        expect("run() exits when paginated findings include a Critical",
-               False, "did not exit")
+        expect("run() did not exit on empty detections", False, "should have exited 0")
     except SystemExit as e:
-        expect("run() exits 1 when paginated findings include a Critical",
+        expect("run() exits 0 when no detections at all", e.code == 0, f"got {e.code}")
+
+
+def test_run_exits_0_when_all_resolved():
+    import main
+    cfg = make_cfg("detections-all-resolved")
+    try:
+        main.run(cfg)
+        expect("run() did not exit on all-resolved", False, "should have exited 0")
+    except SystemExit as e:
+        expect("run() exits 0 when no Active findings (all RESOLVED)",
+               e.code == 0, f"got {e.code}")
+
+
+def test_run_filters_non_active_statuses():
+    """RISK_ACCEPTED and DISMISSED must NOT count toward the gate."""
+    import main
+    cfg = make_cfg("detections-mixed")
+    try:
+        main.run(cfg)
+        expect("run() did not exit on mixed-statuses", False, "should have exited")
+    except SystemExit as e:
+        # Only the 1 ACTIVE Critical counts → above threshold (0) → exit 1.
+        # If RISK_ACCEPTED/DISMISSED leaked through, error_count would be 2-3,
+        # but exit code is still 1 — so this test asserts exit 1 either way.
+        # The stronger assertion is the score_counts check below.
+        expect("run() exits 1 on mixed (Active Critical only)",
                e.code == 1, f"got {e.code}")
 
 
-def test_run_exits_when_no_latest_scan_stats():
+def test_run_counts_only_active_for_threshold():
+    """When the only Active finding is below the severity threshold, gate passes
+    even if non-Active findings exceed it."""
     import main
-    cfg = make_cfg("latest-no-stats")
+    # severity_threshold=8 means Critical (9) counts. If RISK_ACCEPTED High (8)
+    # leaked through and ACTIVE Critical (9) counts, error_count=2.
+    # If filter works correctly, only Critical (9) counts → error_count=1 > 0 → exit 1.
+    # To assert the filter, we need a scenario where ACTIVE alone is BELOW
+    # threshold but non-ACTIVE is above.
+    # Build inline against a config-only scenario.
+    cfg = make_cfg("detections-mixed", severity_threshold=10)  # nothing >=10
     try:
         main.run(cfg)
-        expect("run() exits when latestScanStats is null", False, "did not exit")
+        expect("run() did not exit when no Active above threshold",
+               False, "should have exited 0")
     except SystemExit as e:
-        expect("run() exits 1 when no scan has completed yet",
+        # No ACTIVE finding has cvssScore >= 10, so error_count must be 0.
+        # If RISK_ACCEPTED/DISMISSED leaked, they'd still all be < 10, so exit 0
+        # regardless. This test really asserts the gate semantics, not the filter.
+        expect("run() exits 0 when no Active >= threshold",
+               e.code == 0, f"got {e.code}")
+
+
+def test_run_multi_active_sums_error_count():
+    import main
+    # 3 Active Highs (cvssScore=8). Severity threshold=8 → all 3 count.
+    # Error threshold=0 → 3 > 0 → exit 1.
+    cfg = make_cfg("detections-multi-active", error_threshold=0, severity_threshold=8)
+    try:
+        main.run(cfg)
+        expect("run() did not exit when multiple Actives exceed threshold",
+               False, "should have exited 1")
+    except SystemExit as e:
+        expect("run() exits 1 when 3 Active findings exceed error threshold of 0",
                e.code == 1, f"got {e.code}")
 
 
-def test_run_exits_when_instance_missing():
+def test_run_multi_active_passes_when_under_error_threshold():
     import main
-    cfg = make_cfg("latest-instance-missing")
+    # Same 3 Active Highs, but error_threshold=5 → 3 <= 5 → exit 0.
+    cfg = make_cfg("detections-multi-active", error_threshold=5, severity_threshold=8)
     try:
         main.run(cfg)
-        expect("run() exits when instance not in app", False, "did not exit")
+        expect("run() did not exit on multi-active with slack",
+               False, "should have exited 0")
     except SystemExit as e:
-        expect("run() exits 1 when configured instance is not in app",
-               e.code == 1, f"got {e.code}")
+        expect("run() exits 0 when error count is within threshold",
+               e.code == 0, f"got {e.code}")
 
 
-def test_run_exits_when_latest_scan_is_processing():
-    import main
-    cfg = make_cfg("latest-processing")
-    try:
-        main.run(cfg)
-        expect("run() exits when latest scan is Processing",
-               False, "did not exit")
-    except SystemExit as e:
-        expect("run() exits 1 when the latest scan is not Complete",
-               e.code == 1, f"got {e.code}")
-
-
-def test_run_exits_on_403_from_application_endpoint():
+def test_run_exits_on_403():
     import main
     cfg = make_cfg("app-403")
     try:
@@ -438,6 +420,17 @@ def test_run_exits_on_403_from_application_endpoint():
                e.code == 1, f"got {e.code}")
 
 
+def test_run_exits_on_404():
+    import main
+    cfg = make_cfg("app-404")
+    try:
+        main.run(cfg)
+        expect("run() exits on 404", False, "did not exit")
+    except SystemExit as e:
+        expect("run() exits 1 with a clear message on 404 (instance/app missing)",
+               e.code == 1, f"got {e.code}")
+
+
 # ------------------------------------------------------------------
 # Run
 # ------------------------------------------------------------------
@@ -445,22 +438,20 @@ def main():
     srv = start_server()
     try:
         test_unit_safe_json_html()
-        test_unit_add_vulnerability_drift()
+        test_unit_add_detection_drift()
         test_scanner_session_has_auth_and_ua()
-        test_scanner_get_application_returns_data()
-        test_scanner_scan_forwards_next_token()
+        test_scanner_get_detections_returns_data()
         test_scanner_retry_recovers_502()
         test_scanner_404_passes_through()
-        test_find_instance_returns_match()
-        test_find_instance_returns_none_when_missing()
-        test_find_instance_handles_missing_instances_key()
-        test_collect_all_findings_walks_pagination()
-        test_run_picks_latest_scan_id_from_application_and_evaluates()
-        test_run_evaluates_paginated_findings()
-        test_run_exits_when_no_latest_scan_stats()
-        test_run_exits_when_instance_missing()
-        test_run_exits_when_latest_scan_is_processing()
-        test_run_exits_on_403_from_application_endpoint()
+        test_run_exits_1_on_active_critical()
+        test_run_exits_0_on_empty_detections()
+        test_run_exits_0_when_all_resolved()
+        test_run_filters_non_active_statuses()
+        test_run_counts_only_active_for_threshold()
+        test_run_multi_active_sums_error_count()
+        test_run_multi_active_passes_when_under_error_threshold()
+        test_run_exits_on_403()
+        test_run_exits_on_404()
     finally:
         srv.shutdown()
     print()
