@@ -32,6 +32,68 @@ from dotenv import load_dotenv
 from models import ScanConfig
 from scanner import Scanner
 
+MAX_PAGINATION_PAGES = 100
+
+
+def collect_all_detections(scanner: Scanner, first_body: dict) -> dict:
+    """Walk top-level `nextToken` pagination if the server ever returns one.
+
+    The /detections endpoint is not documented as paginated, but if a
+    nextToken does appear we follow it defensively so a tenant with enough
+    findings to trigger pagination doesn't silently get a partial gate.
+    """
+    if not isinstance(first_body, dict):
+        first_body = {}
+    merged_groups = list(first_body.get('detections') or [])
+    next_token = first_body.get('nextToken')
+    page = 1
+    while next_token and page < MAX_PAGINATION_PAGES:
+        page += 1
+        response = scanner.get_detections(next_token=next_token)
+        if response.status_code != 200:
+            print(
+                f"{Colors.YELLOW}Detections pagination page {page} returned "
+                f"HTTP {response.status_code}; stopping.{Colors.END}"
+            )
+            break
+        body = utils.safe_json(response) or {}
+        merged_groups.extend(body.get('detections') or [])
+        next_token = body.get('nextToken')
+    if next_token:
+        print(
+            f"{Colors.YELLOW}Detections pagination cap of {MAX_PAGINATION_PAGES} "
+            f"pages reached; some findings may be missing.{Colors.END}"
+        )
+    merged = dict(first_body)
+    merged['detections'] = merged_groups
+    merged.pop('nextToken', None)
+    return merged
+
+
+def warn_if_truncated(body: dict):
+    """Compare metadata.totalActiveVulnerabilities against the count of
+    ACTIVE findings actually present in the body. If the API claims more
+    than we received, print a yellow warning so silent server-side
+    truncation surfaces in CI logs."""
+    metadata = body.get('metadata') or {}
+    expected = metadata.get('totalActiveVulnerabilities')
+    if not isinstance(expected, int):
+        return
+    received = 0
+    for group in body.get('detections') or []:
+        if not isinstance(group, dict):
+            continue
+        for det in (group.get('data') or {}).get('vulnerabilities') or []:
+            if isinstance(det, dict) and det.get('status') == 'ACTIVE':
+                received += 1
+    if received < expected:
+        print(
+            f"{Colors.YELLOW}Detections response appears truncated: API "
+            f"reports {expected} active vulnerabilities but only {received} "
+            f"were returned. Gate is running against the {received} that "
+            f"were received — surface this to APIsec if it persists.{Colors.END}"
+        )
+
 
 def evaluate_detections(scanconfig: ScanConfig, body: dict):
     results_table = utils.print_detection_report(
@@ -75,8 +137,10 @@ def run(scanconfig: ScanConfig):
         )
         sys.exit(1)
 
-    body = utils.safe_json(response) or {}
-    evaluate_detections(scanconfig, body)
+    first_body = utils.safe_json(response) or {}
+    full_body = collect_all_detections(scanner, first_body)
+    warn_if_truncated(full_body)
+    evaluate_detections(scanconfig, full_body)
 
 
 def main():

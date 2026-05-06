@@ -1,5 +1,28 @@
 # cicd-latest-fetch — Changelog
 
+## 0.2.1 — defensive pagination + truncation warning
+
+The /detections endpoint is not documented as paginated, but a tenant
+with enough findings to trip a server-side cap shouldn't silently get a
+partial gate. This release adds two safety nets:
+
+- **`nextToken` walk.** If the response ever includes a top-level
+  `nextToken`, `Scanner.get_detections(next_token=...)` is called to
+  fetch the next page. `MAX_PAGINATION_PAGES = 100` caps the loop. If
+  no `nextToken` ever appears (current observed behaviour), this
+  is a no-op.
+- **Completeness check.** After all pages are merged,
+  `metadata.totalActiveVulnerabilities` is compared to the count of
+  ACTIVE findings actually received. If the API reports more than we
+  got, a yellow warning is printed naming both numbers — the gate
+  still runs against what was received, but the discrepancy is loud
+  enough to spot in CI logs.
+
+Tests cover both: a `detections-truncated` scenario where metadata
+claims 5 active vulns but only 1 is in the body (warning fires), and a
+`detections-paginated` scenario that walks two pages and counts both
+findings before evaluating.
+
 ## 0.2.0 — pivot to /detections
 
 Replaced the application-metadata + scan-detail flow with a single

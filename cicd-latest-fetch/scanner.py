@@ -42,13 +42,14 @@ class Scanner:
         kw.setdefault("timeout", (CONNECT_TIMEOUT, READ_TIMEOUT))
         return self.session.request(method, url, **kw)
 
-    def get_detections(self):
-        """Fetch every detection currently on the configured instance.
+    def get_detections(self, next_token: str | None = None):
+        """Fetch detections for the configured instance.
 
-        Single GET — the API returns the full envelope (no nextToken). Each
-        detection record carries its own `status` (ACTIVE / DISMISSED /
-        RISK_ACCEPTED / RESOLVED) and `testResult.cvssScore`, which the gate
-        in main.py filters and counts.
+        The Postman collection does not document pagination on this endpoint,
+        but if the server ever returns a top-level `nextToken`, callers can
+        pass it back in to walk the next page. Each detection record carries
+        its own `status` (ACTIVE / DISMISSED / RISK_ACCEPTED / RESOLVED) and
+        `testResult.cvssScore`, which the gate in main.py filters and counts.
         """
         url = (
             f"{self.scan_config.apisec_base_url}/v1/applications/"
@@ -56,4 +57,6 @@ class Scanner:
             f"{self.scan_config.instance_id}/detections"
         )
         params = {"include": "metadata", "slim": "true"}
+        if next_token:
+            params["nextToken"] = next_token
         return self._request("GET", url, params=params)

@@ -17,7 +17,8 @@ import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from io import StringIO
+from urllib.parse import parse_qs, urlparse
 
 # In-container path
 sys.path.insert(0, "/apisec")
@@ -85,16 +86,27 @@ def _group(category_name, test_name, vulns):
     }
 
 
-def _envelope(*groups):
-    return {
+def _envelope(*groups, total_active_override=None, next_token=None):
+    """Build a /detections response envelope.
+
+    `total_active_override` lets tests force `metadata.totalActiveVulnerabilities`
+    higher than the body actually contains, simulating server-side truncation.
+    `next_token` adds a top-level `nextToken` to simulate a paginated server.
+    """
+    body = {
         "metadata": {
-            "totalActiveVulnerabilities": sum(
-                g["data"]["numActiveVulnerabilities"] for g in groups
+            "totalActiveVulnerabilities": (
+                total_active_override
+                if total_active_override is not None
+                else sum(g["data"]["numActiveVulnerabilities"] for g in groups)
             ),
             "totalTests": 5544,
         },
         "detections": list(groups),
     }
+    if next_token is not None:
+        body["nextToken"] = next_token
+    return body
 
 
 # ------------------------------------------------------------------
@@ -126,6 +138,7 @@ class MockHandler(BaseHTTPRequestHandler):
     def do_request(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        query = parse_qs(parsed.query)
         # Routes:
         #   /v1/applications/<scenario>/instances/<x>/detections    → all detections
         parts = path.strip("/").split("/")
@@ -136,6 +149,7 @@ class MockHandler(BaseHTTPRequestHandler):
             and parts[3] == "instances"
             and parts[5] == "detections"
         )
+        next_token = (query.get("nextToken") or [None])[0]
 
         if scenario == "detections-happy":
             if is_detections_route:
@@ -198,6 +212,41 @@ class MockHandler(BaseHTTPRequestHandler):
         if scenario == "app-404":
             if is_detections_route:
                 return self._send_json(404, {"error": "not found"})
+            return self._send_json(500, {"error": "unexpected route"})
+
+        if scenario == "detections-truncated":
+            # API claims 5 ACTIVE vulns total but only returns 1.
+            # Should warn but NOT fail; gate runs on what was received.
+            if is_detections_route:
+                return self._send_json(200, _envelope(
+                    _group("Payload Injection", "NoSQL Injection", [
+                        _detection("post", "/coupon/validate", 9, "Critical"),
+                    ]),
+                    total_active_override=5,
+                ))
+            return self._send_json(500, {"error": "unexpected route"})
+
+        if scenario == "detections-paginated":
+            # Page 1 returns nextToken=tok-p2 with one Critical;
+            # page 2 returns one more Critical and no nextToken.
+            # Both pages combined match metadata.totalActiveVulnerabilities=2.
+            if is_detections_route:
+                if not next_token:
+                    return self._send_json(200, _envelope(
+                        _group("Payload Injection", "SQL Injection", [
+                            _detection("post", "/p1", 9, "Critical"),
+                        ]),
+                        total_active_override=2,
+                        next_token="tok-p2",
+                    ))
+                if next_token == "tok-p2":
+                    return self._send_json(200, _envelope(
+                        _group("Auth", "Broken Auth", [
+                            _detection("get", "/p2", 9, "Critical"),
+                        ]),
+                        total_active_override=2,
+                    ))
+                return self._send_json(400, {"error": f"unexpected nextToken {next_token!r}"})
             return self._send_json(500, {"error": "unexpected route"})
 
         if scenario == "flaky-502":
@@ -432,6 +481,76 @@ def test_run_exits_on_404():
 
 
 # ------------------------------------------------------------------
+# Tests — completeness check + nextToken pagination
+# ------------------------------------------------------------------
+def _capture_run(cfg):
+    """Run main.run() and return (exit_code, captured_stdout)."""
+    import main
+    buf = StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = buf
+    code = None
+    try:
+        try:
+            main.run(cfg)
+        except SystemExit as e:
+            code = e.code
+    finally:
+        sys.stdout = old_stdout
+    return code, buf.getvalue()
+
+
+def test_run_warns_when_metadata_total_exceeds_received():
+    """If the API reports more ACTIVE vulns than the body contains, surface a
+    warning so the operator can spot silent server-side truncation."""
+    cfg = make_cfg("detections-truncated", error_threshold=0, severity_threshold=8)
+    code, out = _capture_run(cfg)
+    expect(
+        "run() emits truncation warning when metadata > received",
+        "truncated" in out.lower() or "incomplete" in out.lower() or "missing" in out.lower(),
+        f"output had no warning keyword:\n{out}",
+    )
+    expect(
+        "run() still exits 1 on the Active Critical it did receive",
+        code == 1,
+        f"got exit {code}",
+    )
+
+
+def test_run_does_not_warn_when_counts_match():
+    """detections-happy: metadata.totalActiveVulnerabilities == received count."""
+    cfg = make_cfg("detections-happy", error_threshold=0, severity_threshold=8)
+    code, out = _capture_run(cfg)
+    expect(
+        "run() does NOT warn when metadata matches received",
+        not any(w in out.lower() for w in ("truncated", "incomplete", "missing")),
+        f"unexpected warning in output:\n{out}",
+    )
+    expect("run() exits 1 (Critical present)", code == 1, f"got exit {code}")
+
+
+def test_run_walks_next_token_pagination():
+    """Server returns nextToken on page 1; main.run must walk to page 2 and
+    aggregate findings before evaluating."""
+    # Two Critical findings, error_threshold=0 → exit 1.
+    # If pagination did NOT walk, only 1 finding would count — exit code is
+    # still 1, so the stronger signal is the printed total.
+    cfg = make_cfg("detections-paginated", error_threshold=0, severity_threshold=8)
+    code, out = _capture_run(cfg)
+    expect(
+        "run() walks nextToken and counts both pages",
+        "ERRORS: 2" in out,
+        f"expected 'ERRORS: 2' in output, got:\n{out}",
+    )
+    expect("run() exits 1 (paginated criticals)", code == 1, f"got exit {code}")
+    expect(
+        "run() does NOT warn after successful pagination (counts match)",
+        not any(w in out.lower() for w in ("truncated", "incomplete", "missing")),
+        f"unexpected warning in output:\n{out}",
+    )
+
+
+# ------------------------------------------------------------------
 # Run
 # ------------------------------------------------------------------
 def main():
@@ -452,6 +571,9 @@ def main():
         test_run_multi_active_passes_when_under_error_threshold()
         test_run_exits_on_403()
         test_run_exits_on_404()
+        test_run_warns_when_metadata_total_exceeds_received()
+        test_run_does_not_warn_when_counts_match()
+        test_run_walks_next_token_pagination()
     finally:
         srv.shutdown()
     print()
