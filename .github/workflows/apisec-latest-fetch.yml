@@ -16,18 +16,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Build cicd-latest-fetch image (local)
-        run: docker build -t apisec-cicd-latest-fetch:local cicd-latest-fetch/
-
       - name: Run APIsec Latest Scan Gate
+        env:
+          APISEC_APPLICATION_ID: ${{ secrets.APISEC_APPLICATION_ID }}
+          APISEC_INSTANCE_ID: ${{ secrets.APISEC_INSTANCE_ID }}
+          APISEC_ACCESS_TOKEN: ${{ secrets.APISEC_ACCESS_TOKEN }}
+          APISEC_SEVERITY_THRESHOLD: ${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}
+          APISEC_ERROR_THRESHOLD: ${{ vars.APISEC_ERROR_THRESHOLD || '0' }}
+          APISEC_IMAGE_TAG: ${{ vars.APISEC_LATEST_FETCH_TAG || '0.2.1' }}
         run: |
           docker run --rm \
-            -e INPUT_APPLICATION_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
-            -e INPUT_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
-            -e INPUT_ACCESS_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
-            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
-            -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
+            -e INPUT_APPLICATION_ID="$APISEC_APPLICATION_ID" \
+            -e INPUT_INSTANCE_ID="$APISEC_INSTANCE_ID" \
+            -e INPUT_ACCESS_TOKEN="$APISEC_ACCESS_TOKEN" \
+            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="$APISEC_SEVERITY_THRESHOLD" \
+            -e INPUT_FAIL_ON_ERROR_THRESHOLD="$APISEC_ERROR_THRESHOLD" \
             -e INPUT_PRINT_SUMMARY=true \
-            apisec-cicd-latest-fetch:local
+            "gavinapisec/apisec-cicd-latest-fetch:${APISEC_IMAGE_TAG}"
