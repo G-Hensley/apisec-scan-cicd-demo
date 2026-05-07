@@ -14,22 +14,15 @@ jobs:
   apisec-latest-fetch:
     name: APIsec Latest Scan Gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-      - name: Run APIsec Latest Scan Gate
-        env:
-          APISEC_APPLICATION_ID: ${{ secrets.APISEC_APPLICATION_ID }}
-          APISEC_INSTANCE_ID: ${{ secrets.APISEC_INSTANCE_ID }}
-          APISEC_ACCESS_TOKEN: ${{ secrets.APISEC_ACCESS_TOKEN }}
-          APISEC_SEVERITY_THRESHOLD: ${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}
-          APISEC_ERROR_THRESHOLD: ${{ vars.APISEC_ERROR_THRESHOLD || '0' }}
-          APISEC_IMAGE_TAG: ${{ vars.APISEC_LATEST_FETCH_TAG || '0.2.1' }}
-        run: |
-          docker run --rm \
-            -e INPUT_APPLICATION_ID="$APISEC_APPLICATION_ID" \
-            -e INPUT_INSTANCE_ID="$APISEC_INSTANCE_ID" \
-            -e INPUT_ACCESS_TOKEN="$APISEC_ACCESS_TOKEN" \
-            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="$APISEC_SEVERITY_THRESHOLD" \
-            -e INPUT_FAIL_ON_ERROR_THRESHOLD="$APISEC_ERROR_THRESHOLD" \
-            -e INPUT_PRINT_SUMMARY=true \
-            "gavinapisec/apisec-cicd-latest-fetch:${APISEC_IMAGE_TAG}"
+      - uses: Gavin-Hensley/apisec-cicd-latest-fetch@v0.2.2
+        with:
+          application_id: ${{ secrets.APISEC_APPLICATION_ID }}
+          instance_id: ${{ secrets.APISEC_INSTANCE_ID }}
+          access_token: ${{ secrets.APISEC_ACCESS_TOKEN }}
+          fail_on_severity_threshold: ${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}
+          fail_on_error_threshold: ${{ vars.APISEC_ERROR_THRESHOLD || '0' }}
+          print_summary: 'true'
