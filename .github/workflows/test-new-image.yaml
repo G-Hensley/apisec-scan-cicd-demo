@@ -27,8 +27,9 @@ jobs:
             -e APISEC_APP_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
             -e APISEC_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
             -e APISEC_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
-            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
-            -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
-            -e INPUT_AUTHENTICATION_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
-            -e INPUT_PRINT_SUMMARY=true \
+            -e APISEC_MAX_CRITICAL="${{ vars.APISEC_MAX_CRITICAL || '1' }}" \
+            -e APISEC_MAX_HIGH="${{ vars.APISEC_MAX_HIGH || '2' }}" \
+            -e APISEC_AUTH_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
+            -e APISEC_POLL_INTERVAL=30 \
+            -e APISEC_TIMEOUT=7200 \
             apisec/apisec-scan-and-gate:latest
