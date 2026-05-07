@@ -1,28 +1,20 @@
 name: APIsec Latest Scan Gate
-
 on:
-  push:
-    branches:
-      - main
-      - release/**
   pull_request:
-    branches:
-      - main
-  workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
-  apisec-latest-fetch:
-    name: APIsec Latest Scan Gate
+  apisec-gate:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
     steps:
-      - uses: Gavin-Hensley/apisec-cicd-latest-fetch@v0.2.2
+      - uses: Gavin-Hensley/apisec-cicd-latest-fetch@v0.2.3
         with:
           application_id: ${{ secrets.APISEC_APPLICATION_ID }}
           instance_id: ${{ secrets.APISEC_INSTANCE_ID }}
           access_token: ${{ secrets.APISEC_ACCESS_TOKEN }}
-          fail_on_severity_threshold: ${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}
-          fail_on_error_threshold: ${{ vars.APISEC_ERROR_THRESHOLD || '0' }}
+          fail_on_severity_threshold: '8'
+          fail_on_error_threshold: '0'
           print_summary: 'true'
