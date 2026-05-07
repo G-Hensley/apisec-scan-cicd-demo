@@ -1,0 +1,33 @@
+name: APIsec API Security Scan
+
+# Auto-triggers disabled: this workflow kicks off a fresh ~20-minute scan on
+# every run. The sibling `apisec-latest-fetch.yml` workflow gates against
+# the most recent Completed scan instead, so we let that one run on push/PR
+# and reserve this one for manual "force a fresh scan" reruns.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  apisec-scan:
+    name: APIsec CI/CD Integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build scanner image (local, with pagination fix)
+        run: docker build -t apisec-cicd:local cicd-scanner/
+
+      - name: Run APIsec CI/CD Integration
+        run: |
+          docker run --rm \
+            -e INPUT_APPLICATION_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
+            -e INPUT_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
+            -e INPUT_ACCESS_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
+            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
+            -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
+            -e INPUT_AUTHENTICATION_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
+            -e INPUT_PRINT_SUMMARY=true \
+            apisec/apisec-scan-and-gate:latest
