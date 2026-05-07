@@ -24,9 +24,9 @@ jobs:
         run: |
           docker run --rm \
             -e APISEC_HOST="https://api.apisecapps.com" \
-            -e INPUT_APPLICATION_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
-            -e INPUT_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
-            -e INPUT_ACCESS_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
+            -e APISEC_APP_ID="${{ secrets.APISEC_APPLICATION_ID }}" \
+            -e APISEC_INSTANCE_ID="${{ secrets.APISEC_INSTANCE_ID }}" \
+            -e APISEC_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
             -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="${{ vars.APISEC_SEVERITY_THRESHOLD || '8' }}" \
             -e INPUT_FAIL_ON_ERROR_THRESHOLD="${{ vars.APISEC_ERROR_THRESHOLD || '0' }}" \
             -e INPUT_AUTHENTICATION_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
