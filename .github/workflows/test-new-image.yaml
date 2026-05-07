@@ -29,7 +29,6 @@ jobs:
             -e APISEC_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
             -e APISEC_MAX_CRITICAL="${{ vars.APISEC_MAX_CRITICAL || '1' }}" \
             -e APISEC_MAX_HIGH="${{ vars.APISEC_MAX_HIGH || '2' }}" \
-            -e APISEC_AUTH_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
             -e APISEC_POLL_INTERVAL=30 \
             -e APISEC_TIMEOUT=7200 \
             apisec/apisec-scan-and-gate:latest
