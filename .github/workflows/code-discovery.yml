@@ -16,3 +16,4 @@ jobs:
         with:
           api-endpoint: ${{ secrets.API_DISCOVERY_ENDPOINT }}
           api-token: ${{ secrets.API_DISCOVERY_TOKEN }}
+          server: https://api.apisecapps.com
