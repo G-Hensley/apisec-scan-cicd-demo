@@ -3,7 +3,7 @@ info:
   title: APIsec Scan Target
   version: 1.0.0
 servers:
-- url: /
+- url: https://api.apisecapps.com
 paths:
   /healthz:
     get:
