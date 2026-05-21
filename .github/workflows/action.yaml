@@ -1,9 +1,5 @@
 name: APIsec API Security Scan
 
-# Auto-triggers disabled: this workflow kicks off a fresh ~20-minute scan on
-# every run. The sibling `apisec-latest-fetch.yml` workflow gates against
-# the most recent Completed scan instead, so we let that one run on push/PR
-# and reserve this one for manual "force a fresh scan" reruns.
 on:
   pull_request:
   push:
@@ -29,6 +25,7 @@ jobs:
             -e APISEC_TOKEN="${{ secrets.APISEC_ACCESS_TOKEN }}" \
             -e APISEC_MAX_CRITICAL="${{ vars.APISEC_MAX_CRITICAL || '1' }}" \
             -e APISEC_MAX_HIGH="${{ vars.APISEC_MAX_HIGH || '2' }}" \
+            -e APISEC_AUTH_ID="${{ secrets.APISEC_AUTHENTICATION_ID }}" \
             -e APISEC_POLL_INTERVAL=30 \
             -e APISEC_TIMEOUT=7200 \
             apisec/apisec-scan-and-gate:latest

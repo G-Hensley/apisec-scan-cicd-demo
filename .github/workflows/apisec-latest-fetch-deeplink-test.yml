@@ -1,0 +1,42 @@
+name: APIsec Latest Scan Gate (deep-link test)
+
+# Parallel workflow that exercises gavinapisec/apisec-cicd-latest-fetch:0.3.0
+# with INPUT_APISEC_UI_URL set, so the failure output prints clickable
+# per-detection deep-links into the APIsec UI. The existing
+# `apisec-latest-fetch.yml` is left alone — once this proves out on a real
+# scan, the wrapper action repo can be bumped to v0.3.0 and the original
+# workflow can move over.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  apisec-gate-deeplink:
+    name: APIsec Latest Fetch + Deep Links
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      APISEC_APPLICATION_ID: ${{ secrets.APISEC_APPLICATION_ID }}
+      APISEC_INSTANCE_ID: ${{ secrets.APISEC_INSTANCE_ID }}
+      APISEC_ACCESS_TOKEN: ${{ secrets.APISEC_ACCESS_TOKEN }}
+      APISEC_BASE_URL: https://api.apisecapps.com
+      APISEC_UI_URL: https://lpl.apisecapps.com
+      FAIL_ON_SEVERITY_THRESHOLD: "8"
+      FAIL_ON_ERROR_THRESHOLD: "0"
+    steps:
+      - name: Run APIsec latest-fetch gate (0.3.0) with deep-link output
+        run: |
+          docker run --rm \
+            -e INPUT_APPLICATION_ID="$APISEC_APPLICATION_ID" \
+            -e INPUT_INSTANCE_ID="$APISEC_INSTANCE_ID" \
+            -e INPUT_ACCESS_TOKEN="$APISEC_ACCESS_TOKEN" \
+            -e INPUT_APISEC_BASE_URL="$APISEC_BASE_URL" \
+            -e INPUT_APISEC_UI_URL="$APISEC_UI_URL" \
+            -e INPUT_FAIL_ON_SEVERITY_THRESHOLD="$FAIL_ON_SEVERITY_THRESHOLD" \
+            -e INPUT_FAIL_ON_ERROR_THRESHOLD="$FAIL_ON_ERROR_THRESHOLD" \
+            -e INPUT_PRINT_SUMMARY="true" \
+            gavinapisec/apisec-cicd-latest-fetch:0.3.0
