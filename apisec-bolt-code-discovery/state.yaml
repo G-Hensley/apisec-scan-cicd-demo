@@ -1,0 +1,23 @@
+# Code Discovery State File
+# ========================
+# This file stores the application and instance IDs from your API security platform.
+# DO NOT DELETE THIS FILE - it ensures that subsequent runs update the same application
+# instead of creating duplicates.
+#
+# This file is automatically created and managed by Code Discovery.
+# You can safely commit this file to your repository (it contains no sensitive data).
+#
+# If you delete this file, Code Discovery will create a new application on the next run,
+# which may result in duplicate applications in your API security platform.
+
+# Application ID from the API security platform
+# This is used to update the existing application on subsequent runs
+applicationId: "019e48b9-e80a-72bc-9bc6-e9888541a93a"
+
+# Instance ID associated with this application
+# This represents the instance where the API spec will be reloaded
+instanceId: "019e48b9-e9aa-72f2-92ae-b98f1902a3e5"
+
+# Timestamp of the last successful update
+# Format: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)
+lastUpdatedAt: "2026-05-21T04:10:04Z"
